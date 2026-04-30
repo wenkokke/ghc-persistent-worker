@@ -43,7 +43,8 @@ import Prelude hiding (log)
 import System.Directory (createDirectoryIfMissing, listDirectory, removeFile, removePathForcibly)
 import System.IO.Temp (createTempDirectory, getCanonicalTemporaryDirectory)
 import System.OsPath (OsPath)
-import Test.Tasty (TestName, TestTree, testGroup, withResource)
+import System.Timeout (timeout)
+import Test.Tasty (DependencyType (..), TestName, TestTree, dependentTestGroup, withResource)
 import Test.Tasty.Hedgehog (testProperty)
 import Types.Args (emptyArgs)
 import Types.State (WorkerState (..))
@@ -120,12 +121,29 @@ newBuildEnv tp stateVar = do
 
 type Steps = [(UnitName, UnitRequest)]
 
+-- | Per-task timeout for tests (seconds).  Matches the scheduler's @taskTimeout@.
+testTaskTimeout :: Int
+testTaskTimeout = 3
+
+-- | Overall build timeout for tests (microseconds).  Covers scheduler-level deadlocks.
+testBuildTimeoutUs :: Int
+testBuildTimeoutUs = 10 * 1_000_000
+
+-- | Wrap a build action with an overall timeout.  Fails hard if the build does not
+-- complete within 'testBuildTimeoutUs', covering scheduler-level hangs that the
+-- per-task timeout cannot catch.
+timedBuild :: IO a -> IO a
+timedBuild action =
+  timeout testBuildTimeoutUs action >>= \ case
+    Just a  -> pure a
+    Nothing -> fail ("Build deadlocked (timed out after " ++ show (testBuildTimeoutUs `div` 1_000_000) ++ "s)")
+
 -- | Run a fresh build with the given schedule steps.
 runFresh :: MonadIO m => TestProject -> Steps -> m (BuildResult, [BuildEvent])
-runFresh tp steps = liftIO do
+runFresh tp steps = liftIO $ timedBuild do
   stateVar <- newBuildState
   (env, events) <- newBuildEnv tp stateVar
-  result <- runBuild 4 env ScheduleRequest {steps, recompile = False, rebuild = False}
+  result <- runBuild 4 testTaskTimeout env ScheduleRequest {steps, recompile = False, rebuild = False}
   evs <- readEvents events
   pure (result, evs)
 
@@ -134,30 +152,34 @@ runFreshAll :: MonadIO m => TestProject -> m (BuildResult, [BuildEvent])
 runFreshAll tp =
   runFresh tp []
 
+-- | 'stopBuild' wrapped with 'timedBuild'.
+timedStop :: Build -> IO BuildResult
+timedStop cb = timedBuild (stopBuild cb)
+
 -- | Create a new 'Build' for multi-batch tests.
 newTestBuild :: MonadIO m => TestProject -> m (Build, BuildEvents)
 newTestBuild tp = liftIO do
   stateVar <- newBuildState
   (env, events) <- newBuildEnv tp stateVar
-  cb <- newBuild 4 env
+  cb <- newBuild 4 testTaskTimeout env
   pure (cb, events)
 
 -- | Run a fresh build with @maxJobs=1@ and return both the result and recorded events.
 runFreshWithEvents :: MonadIO m => TestProject -> Steps -> m (BuildResult, [BuildEvent])
-runFreshWithEvents tp steps = liftIO do
+runFreshWithEvents tp steps = liftIO $ timedBuild do
   stateVar <- newBuildState
   (env, events) <- newBuildEnv tp stateVar
-  result <- runBuild 1 env ScheduleRequest {steps, recompile = False, rebuild = False}
+  result <- runBuild 1 testTaskTimeout env ScheduleRequest {steps, recompile = False, rebuild = False}
   evs <- readEvents events
   pure (result, evs)
 
 -- | Run a fresh build and return the 'WorkerState' MVar alongside the result and events.
 -- The returned 'MVar' can be used to inspect the post-build HPT.
 runFreshWithState :: MonadIO m => TestProject -> Steps -> m (BuildResult, [BuildEvent], MVar WorkerState)
-runFreshWithState tp steps = liftIO do
+runFreshWithState tp steps = liftIO $ timedBuild do
   stateVar <- newBuildState
   (env, events) <- newBuildEnv tp stateVar
-  result <- runBuild 1 env ScheduleRequest {steps, recompile = False, rebuild = False}
+  result <- runBuild 1 testTaskTimeout env ScheduleRequest {steps, recompile = False, rebuild = False}
   evs <- readEvents events
   pure (result, evs, stateVar)
 
@@ -508,7 +530,7 @@ test_modulesOnly =
 
 test_basicDispatch :: TestTree
 test_basicDispatch =
-  testGroup "Basic dispatch"
+  dependentTestGroup "Basic dispatch" AllFinish
     [ test_buildAll
     , test_metadataOnly
     , test_singleUnit
@@ -604,7 +626,7 @@ test_cacheDeleteMiddleUnit =
 
 test_cacheRestore :: TestTree
 test_cacheRestore =
-  testGroup "Cache restore"
+  dependentTestGroup "Cache restore" AllFinish
     [ test_cacheRestoreAll
     , test_cacheMetadataNoOp
     , test_cacheModulesOnly
@@ -644,7 +666,7 @@ test_pendingThenEnable =
       steps = [(UnitName "unit0", UnitAll)],
       recompile = False, rebuild = False
     }
-    result <- liftIO (stopBuild cb)
+    result <- liftIO (timedStop cb)
     events <- liftIO (readEvents evRef)
     assertSuccess "pending then enable" result
     assertHasMetadata "unit0" events
@@ -658,7 +680,7 @@ test_metadataOnlyLeavesTasksPending =
       steps = [(UnitName "unit0", UnitMetadata)],
       recompile = False, rebuild = False
     }
-    result <- liftIO (stopBuild cb)
+    result <- liftIO (timedStop cb)
     events <- liftIO (readEvents evRef)
     assertSuccess "metadata pending" result
     assertHasMetadata "unit0" events
@@ -676,7 +698,7 @@ test_enabledNotDowngraded =
       steps = [(UnitName "unit0", UnitMetadata)],
       recompile = False, rebuild = False
     }
-    result <- liftIO (stopBuild cb)
+    result <- liftIO (timedStop cb)
     events <- liftIO (readEvents evRef)
     assertSuccess "enabled not downgraded" result
     assertHasCompiled "unit0" events
@@ -708,7 +730,7 @@ test_metadataOnlyForDep =
 
 test_pendingPool :: TestTree
 test_pendingPool =
-  testGroup "Pending pool and promotion"
+  dependentTestGroup "Pending pool and promotion" AllFinish
     [ test_implicitDeps
     , test_pendingThenEnable
     , test_metadataOnlyLeavesTasksPending
@@ -737,7 +759,7 @@ test_multiBatch =
       steps = [(UnitName "unit1", UnitAll), (UnitName "unit2", UnitAll)],
       recompile = False, rebuild = False
     }
-    result <- liftIO (stopBuild cb)
+    result <- liftIO (timedStop cb)
     events <- liftIO (readEvents evRef)
     assertSuccess "multi-batch" result
     ["unit0", "unit1", "unit2", "unit3"] === eventMetadata events
@@ -768,7 +790,7 @@ test_stateAccumulation =
       steps = [(UnitName "unit1", UnitAll)],
       recompile = False, rebuild = False
     }
-    result2 <- liftIO (stopBuild cb)
+    result2 <- liftIO (timedStop cb)
     assertSuccess "batch 2" result2
     -- Events accumulate across batches, but metadata for unit0 should run exactly once
     events <- liftIO (readEvents evRef)
@@ -790,7 +812,7 @@ test_multiBatchWithCache =
       steps = [(UnitName "unit2", UnitAll), (UnitName "unit3", UnitAll)],
       recompile = False, rebuild = False
     }
-    result2 <- liftIO (stopBuild cb)
+    result2 <- liftIO (timedStop cb)
     events2 <- liftIO (readEvents evRef)
     assertSuccess "round 2" result2
     [] === eventMetadata events2
@@ -806,7 +828,7 @@ test_largeFreshBuild =
 
 test_multiBatchScheduling :: TestTree
 test_multiBatchScheduling =
-  testGroup "Multi-batch scheduling"
+  dependentTestGroup "Multi-batch scheduling" AllFinish
     [ test_multiBatch
     , test_redundantBatch
     , test_stateAccumulation
@@ -846,7 +868,7 @@ test_cachedUnitIntraDep =
 
 test_homeUnitDep :: TestTree
 test_homeUnitDep =
-  testGroup "Home-unit dep regression"
+  dependentTestGroup "Home-unit dep regression" AllFinish
     [ test_cachedUnitIntraDep
     ]
 
@@ -969,7 +991,7 @@ test_eventsMetadataOnly =
 
 test_eventFlow :: TestTree
 test_eventFlow =
-  testGroup "Build event flows"
+  dependentTestGroup "Build event flows" AllFinish
     [ test_eventsFreshBuild
     , test_eventsFullCacheRestore
     , test_eventsDeleteLeafCache
@@ -1042,7 +1064,7 @@ test_implicitDepNoCacheCompiled =
 
 test_implicitDepCompileSkip :: TestTree
 test_implicitDepCompileSkip =
-  testGroup "Implicit dep compile skip"
+  dependentTestGroup "Implicit dep compile skip" AllFinish
     [ test_implicitDepCachedSkip
     , test_implicitDepNoCacheCompiled
     ]
@@ -1127,7 +1149,7 @@ test_hptCrossSessionCachedDeps =
 
 test_hptAssembly :: TestTree
 test_hptAssembly =
-  testGroup "HPT assembly"
+  dependentTestGroup "HPT assembly" AllFinish
     [ test_hptCacheRestore
     , test_hptCacheRestoreNoCachedDeps
     , test_hptCrossSessionCachedDeps
@@ -1172,7 +1194,7 @@ test_cacheTransitiveChain =
 
 test_transitiveDepRestore :: TestTree
 test_transitiveDepRestore =
-  testGroup "Transitive dep cache restore"
+  dependentTestGroup "Transitive dep cache restore" AllFinish
     [ test_cacheTransitiveChain
     , test_cacheTransitiveMultipleRoots
     ]
@@ -1212,7 +1234,7 @@ test_cacheTransitiveMultipleRoots =
 
 test_serverBuild :: TestTree
 test_serverBuild =
-  testGroup "GhcServer.Build"
+  dependentTestGroup "GhcServer.Build" AllFinish
     [ test_basicDispatch
     , test_cacheRestore
     , test_pendingPool
