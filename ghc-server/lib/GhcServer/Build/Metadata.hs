@@ -6,12 +6,14 @@ import GhcServer.Cache (buildDepPlans, writeUnitCache)
 import GhcServer.Data.BuildEnv (BuildEnv (..))
 import GhcServer.Data.BuildEvent (BuildEvent (..), logEvent)
 import GhcServer.Data.Unit (Project (..), Unit (..), UnitName (..))
-import GhcServer.Log (withBuildLog)
 import GhcServer.Path (fp, osPath)
 import Internal.Metadata (computeMetadata)
 import Prelude hiding (log)
+import System.Environment (lookupEnv)
 import System.OsPath (OsPath, (</>))
+import System.OsPath.Extra (toOsPath)
 import Types.Args (Args (..))
+import Types.BuildPlan.Incremental (BuckHashesPath (..), BuildPlanPath (..), IncrementalStatePath (..))
 import Types.CachedDeps (CachedBuildPlans)
 import Types.Env (Env (..))
 import Types.Log (Logger (..))
@@ -36,10 +38,12 @@ staticMetaArgs =
   ]
 
 -- | Construct the GHC CLI arguments for a metadata step.
-metadataArgs :: Args -> OsPath -> Maybe CachedBuildPlans -> Unit -> Args
-metadataArgs base outputDir cachedPlans unit =
+metadataArgs :: Args -> OsPath -> Maybe CachedBuildPlans -> Maybe OsPath -> Unit -> Args
+metadataArgs base outputDir cachedPlans buckHashes unit =
   base {
-    buildPlan = Just buildPlanPath,
+    sourceHashes = BuckHashesPath <$> buckHashes,
+    buildPlan = Just (BuildPlanPath buildPlanPath),
+    incrementalState = Just (IncrementalStatePath incrementalStatePath),
     cachedBuildPlans = cachedPlans,
     ghcOptions =
       staticMetaArgs
@@ -52,18 +56,17 @@ metadataArgs base outputDir cachedPlans unit =
         "-stubdir", fp outDir,
         "-dep-makefile", "/dev/null"
       ]
-      ++ sourcePaths
   }
   where
     buildPlanPath = outDir </> osPath "build-plan.json"
+
+    incrementalStatePath = outDir </> osPath "incremental-state.json"
 
     outDir = outputDir </> osPath unit.name.string
 
     depFlags = concatMap depFlag unit.depUnits
 
     depFlag dep = ["-package-id", dep.string]
-
-    sourcePaths = map fp unit.sources
 
 -- | Run the metadata step for a unit.
 --
@@ -77,16 +80,19 @@ runMetadata buildEnv name = do
   logEvent buildEnv.events (MetadataRan name)
   case Map.lookup name buildEnv.project.units of
     Nothing -> pure ([(name, "Unit not found in project")], [])
-    Just unit -> withBuildLog (run unit)
+    Just unit -> run unit buildEnv.log
   where
     run unit logger = do
       cachedPlans <- buildDepPlans buildEnv.project.depGraph unit
-      let env = Env {
+      buckHashes <- lookupEnv "buck_source_hashes"
+      let args = metadataArgs buildEnv.baseArgs buildEnv.outputDir (Just cachedPlans) (toOsPath <$> buckHashes) unit
+          sourcePaths = map fp unit.sources
+          env = Env {
             log = logger,
             state = buildEnv.stateVar,
-            args = metadataArgs buildEnv.baseArgs buildEnv.outputDir (Just cachedPlans) unit
+            args = args {ghcOptions = args.ghcOptions ++ sourcePaths}
           }
-      ifM (fst <$> computeMetadata env) (success unit (Just cachedPlans) env.args logger) (failure logger)
+      ifM (fst <$> computeMetadata env) (success unit (Just cachedPlans) args logger) (failure logger)
 
     success unit cachedPlans args logger = do
       cacheResult <- case args.buildPlan of

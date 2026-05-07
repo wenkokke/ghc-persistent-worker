@@ -71,6 +71,7 @@ serverConfigParser =
     <*> option auto (long "jobs" <> short 'j' <> metavar "N" <> help "Maximum concurrent jobs" <> value 4)
     <*> switch (long "verbose" <> short 'v' <> help "Print the build log on success")
     <*> switch (long "cabal" <> help "Use .cabal file for project discovery")
+    <*> featureFlagsParser
   where
     readOsPath = str >>= \ s ->
       case encodeUtf s of
