@@ -16,6 +16,8 @@ import qualified Data.Map.Strict as Map
 import qualified Data.Set as Set
 import GHC (mkModuleName, moduleNameString)
 import GHC.Stack (HasCallStack, withFrozenCallStack)
+import GHC.Unit.Home.Graph (HomeUnitEnv (..), unitEnv_lookup)
+import GHC.Unit.Home.PackageTable (lookupHpt)
 import GHC.Unit.Types (stringToUnit, toUnitId)
 import GhcServer.Build (
   Build (..),
@@ -37,7 +39,6 @@ import GhcServer.Log (newLogger)
 import GhcServer.Path (osPath)
 import GhcServer.Project (discoverProject)
 import Hedgehog (TestT, annotate, assert, diff, property, test, withTests, (===))
-import Internal.UnitEnv (lookupHpt)
 import Prelude hiding (log)
 import System.Directory (createDirectoryIfMissing, listDirectory, removeFile, removePathForcibly)
 import System.IO.Temp (createTempDirectory, getCanonicalTemporaryDirectory)
@@ -47,12 +48,6 @@ import Test.Tasty.Hedgehog (testProperty)
 import Types.Args (emptyArgs)
 import Types.State (WorkerState (..))
 import Types.State.Make (MakeState (..))
-
-#if MIN_VERSION_GLASGOW_HASKELL(9,14,0,0) || defined(MWB)
-import GHC.Unit.Home.Graph (HomeUnitEnv (..), unitEnv_lookup)
-#else
-import GHC.Unit.Env (HomeUnitEnv (..), unitEnv_lookup)
-#endif
 
 -- ---------------------------------------------------------------------------
 -- Low-level helpers
