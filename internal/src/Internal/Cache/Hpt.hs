@@ -65,7 +65,7 @@ import GHC.Unit.Module.ModIface (mi_sc_extra_decls, mi_sc_foreign)
 
 #endif
 
-#if defined(MWB)
+#if defined(MWB) && defined(STRICT_CACHED_BYTECODE)
 
 import GHC.Driver.Main(compileWholeCoreBindings)
 
