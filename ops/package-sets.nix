@@ -217,8 +217,7 @@ in {
   };
 
   package-sets.ghc914 = {
-    overrides = api@{hackage, force, notest, ...}: let
-
+    overrides = api@{hackage, force, notest, jailbreak, ...}: let
       github = mkGithub api;
 
     in {
@@ -237,7 +236,11 @@ in {
         path = "proto-lens-setup";
         hash = "sha256-st+j4vK4N00xHB//b62/HPLRBUw/PRGL8bP8WECMU5U=";
       };
-
+      bitwise = jailbreak;
+      config-ini = jailbreak;
+      fsnotify = jailbreak;
+      string-interpolate = jailbreak;
+      brick = jailbreak;
     };
   };
 
