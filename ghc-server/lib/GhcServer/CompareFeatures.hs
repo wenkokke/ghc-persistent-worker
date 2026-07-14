@@ -114,7 +114,7 @@ data BenchResult =
 -- | All feature flag constructors.
 allFlags :: [FeatureFlag]
 allFlags =
-  [FeatureFixedNodesCache, FeatureFlagParser, FeatureConcurrentInitUnits, FeatureIncrementalBuildPlan]
+  [FeatureFixedNodesCache, FeatureFlagParser, FeatureConcurrentInitUnits, FeatureIncrementalBuildPlan, FeatureInstrument]
 
 -- | All 16 permutations (power set) of feature flags.
 allPermutations :: [FeatureFlags]
@@ -128,7 +128,8 @@ flagsFromList enabled =
     fixedNodesCache = FeatureFixedNodesCache `elem` enabled,
     flagParser = FeatureFlagParser `elem` enabled,
     concurrentInitUnits = FeatureConcurrentInitUnits `elem` enabled,
-    incrementalBuildPlan = FeatureIncrementalBuildPlan `elem` enabled
+    incrementalBuildPlan = FeatureIncrementalBuildPlan `elem` enabled,
+    instrument = FeatureInstrument `elem` enabled
   }
 
 -- | Convert 'FeatureFlags' to CLI args for the server.
@@ -144,6 +145,7 @@ featureFlagsToArgs flags =
           FeatureFlagParser -> flags.flagParser
           FeatureConcurrentInitUnits -> flags.concurrentInitUnits
           FeatureIncrementalBuildPlan -> flags.incrementalBuildPlan
+          FeatureInstrument -> flags.instrument
 
         prefix = if enabled then "--enable" else "--disable"
 
@@ -152,6 +154,7 @@ featureFlagsToArgs flags =
           FeatureFlagParser -> "flag-parser"
           FeatureConcurrentInitUnits -> "concurrent-init-units"
           FeatureIncrementalBuildPlan -> "incremental-build-plan"
+          FeatureInstrument -> "instrument"
 
 -- | Short label for a feature config.
 featureLabel :: FeatureFlags -> String
