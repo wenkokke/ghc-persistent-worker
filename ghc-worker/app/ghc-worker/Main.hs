@@ -4,12 +4,15 @@ import Control.Exception (Exception (..), SomeException (..), try)
 import Control.Monad.IO.Class (MonadIO (liftIO))
 import GhcWorker.Run (parseCliArgs, runWorker)
 import System.IO (BufferMode (..), hPutStrLn, hSetBuffering, stderr, stdout)
+import GHC.Eventlog.Socket (startFromEnv)
 
 dbg :: MonadIO m => String -> m ()
 dbg = liftIO . hPutStrLn stderr
 
 main :: IO ()
 main = do
+  -- Start eventlog-socket instrumentation.
+  startFromEnv
   hSetBuffering stdout LineBuffering
   hSetBuffering stderr LineBuffering
   try (runWorker =<< parseCliArgs) >>= \case
