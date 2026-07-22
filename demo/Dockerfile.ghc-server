@@ -1,0 +1,98 @@
+# syntax=docker/dockerfile:1.7-labs
+
+# To build this image, run:
+# docker build --tag well-typed/ghc-worker:0.1 --file ./demo/Dockerfile.ghc-worker .
+
+# Use the Haskell image with GHC 9.10.1
+# See: https://hub.docker.com/_/haskell
+FROM haskell:9.14.1-slim-bookworm AS build
+
+# Install protoc & snappy
+RUN DEBIAN_FRONTEND=noninteractive apt-get update && apt-get install -y protobuf-compiler
+
+# Copy required packages to container
+WORKDIR "/ghc-persistent-worker"
+COPY --parents \
+  "./ghc-server/" \
+  "./ghc-worker/" \
+  "./grpc/" \
+  "./internal/" \
+  "./proto/" \
+  "./test-common/" \
+  "./types/" \
+  "/ghc-persistent-worker/"
+
+# Create cabal.project file
+COPY <<EOF /ghc-persistent-worker/cabal.project
+packages: ghc-server
+packages: ghc-worker
+packages: grpc
+packages: internal
+packages: proto
+packages: test-common
+packages: types
+
+index-state: 2026-07-03T13:55:55Z
+
+-- 2026-07-22
+-- The tests for ghc-worker do not compile.
+tests: False
+
+-- 2026-07-22
+-- This image uses an unmodified GHC 9.14.1.
+flags: -mwb
+
+-- 2026-07-22
+-- The fixed nodes patch was merged into GHC 9.14.1.
+if (impl(ghc >= 9.14))
+    flags: +fixed-nodes
+
+-- 2025-11-17:
+-- Disable snappy support in grpc-spec.
+package grpc-spec
+  flags: -snappy
+
+allow-newer:
+  , *:base
+  , *:ghc-bignum
+  , *:template-haskell
+  , *:async
+  , proto-lens:*
+  , *:containers
+  , *:bytestring
+  , ghc-debug-brick:*
+  , tasty-hedgehog:hedgehog
+  , time
+
+constraints:
+ , extra == 1.8
+
+source-repository-package
+  type: git
+  location: https://gitlab.haskell.org/ghc/ghc-debug
+  tag: 1b0f36fab86e9baa9734c88dcc1dbe17d10d8c93
+  subdir: client
+          common
+          convention
+          stub
+          ghc-debug-brick
+
+source-repository-package
+  type: git
+  location: https://github.com/wavewave/flatparse.git
+  tag: b237959eb9c1ec10cd5be4f68c9eb1cf5d3c59ef
+EOF
+
+# Build ghc-server
+RUN <<EOF
+cabal update
+mkdir "/ghc-persistent-worker/bin"
+cabal install \
+    --overwrite-policy=always \
+    --install-method=copy \
+    --installdir="/bin" \
+    ghc-server
+EOF
+
+# Run command
+ENTRYPOINT ["/bin/ghc-server"]
