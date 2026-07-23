@@ -1,0 +1,155 @@
+services:
+  project-setup:
+    build:
+      context: ".."
+      dockerfile: "./demo/Dockerfile.project-setup"
+    volumes:
+      - "project:/run/project"
+
+  ghc-server:
+    build:
+      context: ".."
+      dockerfile: "./demo/Dockerfile.ghc-server"
+    depends_on:
+      project-setup:
+        condition: "service_completed_successfully"
+    volumes:
+      - "project:/run/project"
+    command:
+      - "+RTS"
+      - "-l"
+      - "-hT"
+      - "--eventlog-flush-interval=1"
+      - "-RTS"
+      - "--verbose"
+      - "--cabal"
+      - "/run/project"
+    environment:
+      GHC_EVENTLOG_UNIX_PATH: "/run/project/socket/eventlog-live.socket"
+
+  ghc-client:
+    build:
+      context: ".."
+      dockerfile: "./demo/Dockerfile.ghc-client"
+    depends_on:
+      ghc-server:
+        condition: "service_started"
+    restart: "always"
+    volumes:
+      - "project:/run/project"
+    command:
+      - "--wait"
+      - "/run/project"
+      - "tooter"
+      - "--rebuild"
+
+  eventlog-live-otelcol:
+    build:
+      context: ".."
+      dockerfile: "./demo/Dockerfile.eventlog-live-otelcol"
+    depends_on:
+      ghc-server:
+        condition: "service_started"
+    restart: "always"
+    volumes:
+      - "project:/run/project"
+      - "./config/eventlog-live-otelcol.yaml:/etc/eventlog-live/config.yaml"
+    ports:
+      - "30719:30719"
+    command:
+      - "--verbosity=debug"
+      - "--config=/etc/eventlog-live/config.yaml"
+      - "--service-name=ghc-server"
+      - "--eventlog-socket=/run/project/socket/eventlog-live.socket"
+      - "-hT"
+      - "--eventlog-flush-interval=1"
+      - "--otelcol-host=otelcol"
+      - "--control"
+      - "--control-port=30719"
+      - "--control-cors-ignore-failure"
+
+  grafana:
+    # container_name: grafana
+    image: grafana/grafana:latest
+    ports:
+      - "3000:3000"
+    healthcheck:
+      test: "curl -f http://localhost:3000/api/health"
+      interval: 1m
+      timeout: 10s
+      retries: 5
+    environment:
+      GF_PLUGINS_PREINSTALL: "grafana-pyroscope-app"
+    volumes:
+      - "./config/grafana-datasources.yaml:/etc/grafana/provisioning/datasources/datasources.yaml"
+      - "./config/grafana-dashboards.yaml:/etc/grafana/provisioning/dashboards/dashboards.yaml"
+      - "./config/grafana-dashboards:/var/lib/grafana/dashboards"
+
+  loki:
+    # container_name: loki
+    image: grafana/loki:latest
+    command:
+      - "--config.file=/etc/loki/config.yaml"
+    ports:
+      - "3100"
+    volumes:
+      - "./config/loki.yaml:/etc/loki/config.yaml"
+
+  otelcol:
+    # container_name: otelcol
+    image: otel/opentelemetry-collector-contrib:0.140.1
+
+    depends_on:
+      loki:
+        condition: "service_started"
+      prometheus:
+        condition: "service_started"
+      tempo:
+        condition: "service_started"
+      pyroscope:
+        condition: "service_started"
+    command:
+      - "--config=/etc/otelcol/config.yaml"
+      - "--feature-gates=service.profilesSupport"
+    volumes:
+      - "./config/otelcol.yaml:/etc/otelcol/config.yaml"
+    ports:
+      - "4317:4317" # OTLP gRPC receiver
+      - "4318:4318" # OTLP HTTP receiver
+      - "55679:55679" # zPages extension
+
+  prometheus:
+    # container_name: prometheus
+    image: prom/prometheus:latest
+    command:
+      - "--config.file=/etc/prometheus/prometheus.yaml"
+    volumes:
+      - "./config/prometheus.yaml:/etc/prometheus/prometheus.yaml"
+    ports:
+      - "9090:9090" # Prometheus
+
+  pyroscope:
+    # container_name: pyroscope
+    image: grafana/pyroscope:1.16.0
+    command:
+      - "-config.file=/etc/pyroscope.yaml"
+    volumes:
+      - "./config/pyroscope.yaml:/etc/pyroscope.yaml"
+    ports:
+      - 4040:4040 # Pyroscope
+
+  tempo:
+    # container_name: tempo
+    build:
+      context: ".."
+      dockerfile: "./demo/Dockerfile.tempo"
+    command: ["-config.file=/etc/tempo.yaml"]
+    volumes:
+      - "./config/tempo.yaml:/etc/tempo.yaml"
+    ports:
+      - "24317:24317" # OTLP gRPC receiver
+      - "24318:24318" # OTLP HTTP receiver
+      - "3200:3200" # Tempo
+
+volumes:
+  project:

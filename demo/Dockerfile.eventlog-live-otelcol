@@ -1,0 +1,33 @@
+# syntax=docker/dockerfile:1.7-labs
+
+# To build this image, run:
+# docker build --tag well-typed/eventlog-live-otelcol:0.1.0.0 --file ./demo/Dockerfile.eventlog-live-otelcol .
+
+# Use the Haskell image with GHC 9.10.1
+# See: https://hub.docker.com/_/haskell
+FROM haskell:9.10-slim-bullseye AS build
+
+# Install protoc
+RUN DEBIAN_FRONTEND=noninteractive apt-get update && apt-get install -y protobuf-compiler libsnappy-dev
+
+# Build eventlog-live-otelcol
+RUN <<EOF
+cabal update
+mkdir -p "/eventlog-live/bin"
+cabal install \
+    -f+control \
+    --overwrite-policy=always \
+    --install-method=copy \
+    --installdir="/eventlog-live/bin" \
+    eventlog-live-otelcol-0.6.0.0
+EOF
+
+# Copy eventlog-live-otelcol to output stage
+FROM debian:bullseye-slim AS output
+COPY --from=build "/eventlog-live/bin/eventlog-live-otelcol" "/bin/eventlog-live-otelcol"
+
+# Install protoc
+RUN DEBIAN_FRONTEND=noninteractive apt-get update && apt-get install -y libsnappy-dev
+
+# Run command
+ENTRYPOINT ["/bin/eventlog-live-otelcol"]

@@ -1,0 +1,8 @@
+FROM debian:bookworm-slim AS setup
+
+# Copy project to container
+WORKDIR "/project"
+COPY "./demo/tooter" "/project"
+
+# Run command
+ENTRYPOINT ["cp", "-r", "/project/src", "/project/tooter.cabal", "/run/project/"]
